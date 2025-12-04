@@ -282,22 +282,308 @@ func (c *ONVIFClient) SetNTP(ntpServer string) error {
 	return nil
 }
 
-// 事件订阅
-func (c *ONVIFClient) SubscribeEvents(duration int, filter string) error {
-	fmt.Printf("订阅设备事件 (持续 %d 秒)...\n", duration)
-	fmt.Println("注意: 完整的事件订阅需要 WS-BaseNotification 和 PullPoint 支持")
-	fmt.Println("这是一个简化实现，实际生产环境建议使用专门的事件处理库")
+// 事件订阅相关结构
+type CreatePullPointSubscription struct {
+	XMLName                xml.Name `xml:"http://www.onvif.org/ver10/events/wsdl CreatePullPointSubscription"`
+	Filter                 *Filter  `xml:"Filter,omitempty"`
+	InitialTerminationTime string   `xml:"InitialTerminationTime,omitempty"`
+}
 
-	// 这里是一个简化的实现框架
-	// 完整实现需要 CreatePullPointSubscription 和持续的 PullMessages
+type Filter struct {
+	TopicExpression string `xml:"TopicExpression,omitempty"`
+}
+
+type CreatePullPointSubscriptionResponse struct {
+	SubscriptionReference SubscriptionReference `xml:"SubscriptionReference"`
+	CurrentTime           string                `xml:"CurrentTime"`
+	TerminationTime       string                `xml:"TerminationTime"`
+}
+
+type SubscriptionReference struct {
+	Address string `xml:"Address"`
+}
+
+type PullMessages struct {
+	XMLName      xml.Name `xml:"http://www.onvif.org/ver10/events/wsdl PullMessages"`
+	Timeout      string   `xml:"Timeout"`
+	MessageLimit int      `xml:"MessageLimit"`
+}
+
+type PullMessagesResponse struct {
+	CurrentTime         string                `xml:"CurrentTime"`
+	TerminationTime     string                `xml:"TerminationTime"`
+	NotificationMessage []NotificationMessage `xml:"NotificationMessage"`
+}
+
+type NotificationMessage struct {
+	Topic   Topic   `xml:"Topic"`
+	Message Message `xml:"Message"`
+}
+
+type Topic struct {
+	Dialect string `xml:"Dialect,attr"`
+	Value   string `xml:",chardata"`
+}
+
+type Message struct {
+	UtcTime string      `xml:"UtcTime,attr"`
+	Source  EventSource `xml:"Source"`
+	Data    EventData   `xml:"Data"`
+}
+
+type EventSource struct {
+	SimpleItem []SimpleItem `xml:"SimpleItem"`
+}
+
+type EventData struct {
+	SimpleItem []SimpleItem `xml:"SimpleItem"`
+}
+
+type SimpleItem struct {
+	Name  string `xml:"Name,attr"`
+	Value string `xml:"Value,attr"`
+}
+
+type Renew struct {
+	XMLName         xml.Name `xml:"http://docs.oasis-open.org/wsn/b-2 Renew"`
+	TerminationTime string   `xml:"TerminationTime"`
+}
+
+type RenewResponse struct {
+	TerminationTime string `xml:"TerminationTime"`
+	CurrentTime     string `xml:"CurrentTime"`
+}
+
+type Unsubscribe struct {
+	XMLName xml.Name `xml:"http://docs.oasis-open.org/wsn/b-2 Unsubscribe"`
+}
+
+// 事件订阅完整实现
+func (c *ONVIFClient) SubscribeEvents(duration int, filter string) error {
+	fmt.Printf("正在订阅设备事件 (持续 %d 秒)...\n\n", duration)
 
 	eventAddr := fmt.Sprintf("%s://%s:%d/onvif/event_service",
 		map[bool]string{true: "https", false: "http"}[c.UseHTTPS], c.Host, c.Port)
 
-	fmt.Printf("事件服务地址: %s\n", eventAddr)
-	fmt.Println("✓ 事件订阅功能需要设备支持 ONVIF Events Profile")
+	// 1. 创建 PullPoint 订阅
+	fmt.Println("步骤 1: 创建 PullPoint 订阅...")
+
+	subscribeReq := CreatePullPointSubscription{
+		InitialTerminationTime: fmt.Sprintf("PT%dS", duration),
+	}
+
+	// 如果指定了过滤器
+	if filter != "" {
+		subscribeReq.Filter = &Filter{
+			TopicExpression: filter,
+		}
+	}
+
+	respData, err := c.sendRequest(eventAddr, &subscribeReq)
+	if err != nil {
+		return fmt.Errorf("创建订阅失败: %w", err)
+	}
+
+	var subscribeResp struct {
+		Body struct {
+			CreatePullPointSubscriptionResponse CreatePullPointSubscriptionResponse
+		}
+	}
+
+	if err = xml.Unmarshal(respData, &subscribeResp); err != nil {
+		return fmt.Errorf("解析订阅响应失败: %w", err)
+	}
+
+	subRef := subscribeResp.Body.CreatePullPointSubscriptionResponse
+	pullPointAddr := subRef.SubscriptionReference.Address
+
+	fmt.Printf("✓ 订阅成功\n")
+	fmt.Printf("  订阅地址: %s\n", pullPointAddr)
+	fmt.Printf("  当前时间: %s\n", subRef.CurrentTime)
+	fmt.Printf("  终止时间: %s\n\n", subRef.TerminationTime)
+
+	// 2. 开始拉取消息
+	fmt.Println("步骤 2: 开始监听事件...")
+	fmt.Println("----------------------------------------")
+
+	startTime := time.Now()
+	endTime := startTime.Add(time.Duration(duration) * time.Second)
+	messageCount := 0
+	renewInterval := time.Duration(duration/2) * time.Second
+	lastRenew := startTime
+
+	for time.Now().Before(endTime) {
+		// 定期续订
+		if time.Since(lastRenew) > renewInterval {
+			if err = c.renewSubscription(pullPointAddr, duration); err != nil {
+				fmt.Printf("⚠ 续订失败: %v\n", err)
+			} else {
+				lastRenew = time.Now()
+				if c.Debug {
+					fmt.Println("✓ 订阅已续订")
+				}
+			}
+		}
+
+		// 拉取消息
+		pullReq := PullMessages{
+			Timeout:      "PT5S",
+			MessageLimit: 10,
+		}
+
+		respData, err = c.sendRequest(pullPointAddr, &pullReq)
+		if err != nil {
+			if c.Debug {
+				fmt.Printf("拉取消息失败: %v\n", err)
+			}
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		var pullResp struct {
+			Body struct {
+				PullMessagesResponse PullMessagesResponse
+			}
+		}
+
+		if err = xml.Unmarshal(respData, &pullResp); err != nil {
+			if c.Debug {
+				fmt.Printf("解析消息失败: %v\n", err)
+			}
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		messages := pullResp.Body.PullMessagesResponse.NotificationMessage
+
+		// 处理接收到的消息
+		for _, msg := range messages {
+			messageCount++
+			c.printEventMessage(messageCount, msg)
+		}
+
+		// 如果没有消息，短暂休眠
+		if len(messages) == 0 {
+			time.Sleep(1 * time.Second)
+		}
+	}
+
+	// 3. 取消订阅
+	fmt.Println("\n----------------------------------------")
+	fmt.Println("步骤 3: 取消订阅...")
+
+	if err := c.unsubscribe(pullPointAddr); err != nil {
+		fmt.Printf("⚠ 取消订阅失败: %v\n", err)
+	} else {
+		fmt.Println("✓ 订阅已取消")
+	}
+
+	fmt.Printf("\n事件监听完成，共接收 %d 条消息\n", messageCount)
 
 	return nil
+}
+
+// 续订订阅
+func (c *ONVIFClient) renewSubscription(pullPointAddr string, duration int) error {
+	renewReq := Renew{
+		TerminationTime: fmt.Sprintf("PT%dS", duration),
+	}
+
+	respData, err := c.sendRequest(pullPointAddr, &renewReq)
+	if err != nil {
+		return err
+	}
+
+	var renewResp struct {
+		Body struct {
+			RenewResponse RenewResponse
+		}
+	}
+
+	if err := xml.Unmarshal(respData, &renewResp); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// 取消订阅
+func (c *ONVIFClient) unsubscribe(pullPointAddr string) error {
+	unsubReq := Unsubscribe{}
+	_, err := c.sendRequest(pullPointAddr, &unsubReq)
+	return err
+}
+
+// 打印事件消息
+func (c *ONVIFClient) printEventMessage(count int, msg NotificationMessage) {
+	fmt.Printf("\n[事件 #%d]\n", count)
+	fmt.Printf("时间: %s\n", msg.Message.UtcTime)
+	fmt.Printf("主题: %s\n", msg.Topic.Value)
+
+	// 打印事件源
+	if len(msg.Message.Source.SimpleItem) > 0 {
+		fmt.Println("来源:")
+		for _, item := range msg.Message.Source.SimpleItem {
+			fmt.Printf("  %s: %s\n", item.Name, item.Value)
+		}
+	}
+
+	// 打印事件数据
+	if len(msg.Message.Data.SimpleItem) > 0 {
+		fmt.Println("数据:")
+		for _, item := range msg.Message.Data.SimpleItem {
+			fmt.Printf("  %s: %s\n", item.Name, item.Value)
+		}
+	}
+
+	// 解析常见事件类型
+	c.parseEventType(msg)
+}
+
+// 解析事件类型
+func (c *ONVIFClient) parseEventType(msg NotificationMessage) {
+	topic := msg.Topic.Value
+
+	// 运动检测
+	if strings.Contains(topic, "MotionDetector") || strings.Contains(topic, "CellMotionDetector") {
+		for _, item := range msg.Message.Data.SimpleItem {
+			if item.Name == "State" {
+				if item.Value == "true" {
+					fmt.Println(">>> 检测到运动!")
+				} else {
+					fmt.Println(">>> 运动结束")
+				}
+			}
+		}
+	}
+
+	// 篡改检测
+	if strings.Contains(topic, "TamperDetector") {
+		for _, item := range msg.Message.Data.SimpleItem {
+			if item.Name == "State" {
+				if item.Value == "true" {
+					fmt.Println(">>> 检测到篡改!")
+				} else {
+					fmt.Println(">>> 篡改结束")
+				}
+			}
+		}
+	}
+
+	// 音频检测
+	if strings.Contains(topic, "AudioAnalytics") {
+		fmt.Println(">>> 音频事件触发")
+	}
+
+	// 区域入侵
+	if strings.Contains(topic, "FieldDetector") {
+		fmt.Println(">>> 区域入侵检测")
+	}
+
+	// 越界检测
+	if strings.Contains(topic, "LineDetector") {
+		fmt.Println(">>> 越界检测")
+	}
 }
 
 // 批量配置管理
