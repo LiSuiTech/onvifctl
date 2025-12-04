@@ -39,6 +39,10 @@ func main() {
 	rootCmd.AddCommand(ptzCmd())
 	rootCmd.AddCommand(snapshotCmd())
 	rootCmd.AddCommand(configCmd())
+	rootCmd.AddCommand(discoverCmd())
+	rootCmd.AddCommand(timeCmd())
+	rootCmd.AddCommand(eventsCmd())
+	rootCmd.AddCommand(batchCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
@@ -56,10 +60,19 @@ func infoCmd() *cobra.Command {
 				return fmt.Errorf("必须指定设备地址 (-H/--host)")
 			}
 
+			if port < 1 || port > 65535 {
+				return fmt.Errorf("端口号必须在 1-65535 之间")
+			}
+
+			if authMode != "ws-security" && authMode != "digest" {
+				return fmt.Errorf("认证模式必须是 ws-security 或 digest")
+			}
+
 			client, err := NewONVIFClient(host, port, username, password, debug, useHTTPS)
 			if err != nil {
 				return fmt.Errorf("连接设备失败: %w", err)
 			}
+			client.AuthMode = authMode
 
 			return client.GetDeviceInfo()
 		},
@@ -80,10 +93,19 @@ func streamCmd() *cobra.Command {
 				return fmt.Errorf("必须指定设备地址 (-H/--host)")
 			}
 
+			if port < 1 || port > 65535 {
+				return fmt.Errorf("端口号必须在 1-65535 之间")
+			}
+
+			if authMode != "ws-security" && authMode != "digest" {
+				return fmt.Errorf("认证模式必须是 ws-security 或 digest")
+			}
+
 			client, err := NewONVIFClient(host, port, username, password, debug, useHTTPS)
 			if err != nil {
 				return fmt.Errorf("连接设备失败: %w", err)
 			}
+			client.AuthMode = authMode
 
 			return client.GetStreamURI(profile)
 		},
@@ -95,78 +117,108 @@ func streamCmd() *cobra.Command {
 }
 
 func ptzCmd() *cobra.Command {
-	var action string
-	var pan, tilt, zoom float64
-	var timeout, preset int
+	var (
+		panSpeed  float64
+		tiltSpeed float64
+		zoomSpeed float64
+		timeout   int
+		preset    int
+		action    string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "ptz",
-		Short: "PTZ 控制",
-		Long:  "PTZ 相关操作，如移动、定位等",
+		Short: "PTZ 云台控制",
+		Long:  "控制摄像头云台移动、缩放、预置位等",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if host == "" {
 				return fmt.Errorf("必须指定设备地址 (-H/--host)")
+			}
+
+			if port < 1 || port > 65535 {
+				return fmt.Errorf("端口号必须在 1-65535 之间")
+			}
+
+			if authMode != "ws-security" && authMode != "digest" {
+				return fmt.Errorf("认证模式必须是 ws-security 或 digest")
 			}
 
 			client, err := NewONVIFClient(host, port, username, password, debug, useHTTPS)
 			if err != nil {
 				return fmt.Errorf("连接设备失败: %w", err)
 			}
-			if action == "move" {
-				return client.PTZMove(pan, tilt, zoom, timeout)
-			}
-			if action == "setpreset" {
-				return client.PTZSetPreset(preset)
-			}
-			if action == "goto" {
-				return client.PTZGotoPreset(preset)
-			}
-			if action == "list" {
-				return client.PTZListPresets()
-			}
-			if action == "stop" {
+			client.AuthMode = authMode
+
+			switch action {
+			case "move":
+				return client.PTZMove(panSpeed, tiltSpeed, zoomSpeed, timeout)
+			case "stop":
 				return client.PTZStop()
+			case "goto":
+				if preset == 0 {
+					return fmt.Errorf("必须指定预置位编号 (--preset)")
+				}
+				return client.PTZGotoPreset(preset)
+			case "setpreset":
+				if preset == 0 {
+					return fmt.Errorf("必须指定预置位编号 (--preset)")
+				}
+				return client.PTZSetPreset(preset)
+			case "list":
+				return client.PTZListPresets()
+			default:
+				return fmt.Errorf("未知的操作: %s (支持: move, stop, goto, setpreset, list)", action)
 			}
-			return fmt.Errorf("未知的 PTZ 操作: %s", action)
 		},
 	}
 
-	cmd.Flags().StringVar(&action, "action", "", "操作类型 (move, setpreset, goto, list, stop) (必填)")
-	cmd.Flags().Float64Var(&pan, "pan", 0, "水平速度 (-1.0 到 1.0)")
-	cmd.Flags().Float64Var(&tilt, "tilt", 0, "垂直速度 (-1.0 到 1.0)")
-	cmd.Flags().Float64Var(&zoom, "zoom", 0, "缩放速度 (-1.0 到 1.0)")
-	cmd.Flags().IntVar(&timeout, "timeout", 1, "移动持续时间(秒)")
+	cmd.Flags().StringVar(&action, "action", "", "操作类型: move, stop, goto, setpreset, list (必填)")
+	cmd.Flags().Float64Var(&panSpeed, "pan", 0, "水平速度 (-1.0 到 1.0, 负值向左)")
+	cmd.Flags().Float64Var(&tiltSpeed, "tilt", 0, "垂直速度 (-1.0 到 1.0, 负值向下)")
+	cmd.Flags().Float64Var(&zoomSpeed, "zoom", 0, "缩放速度 (-1.0 到 1.0, 负值缩小)")
+	cmd.Flags().IntVar(&timeout, "timeout", 1, "移动持续时间（秒）")
 	cmd.Flags().IntVar(&preset, "preset", 0, "预置位编号")
-	
-	// 标记 action 为必填参数
+
 	cmd.MarkFlagRequired("action")
 
 	return cmd
 }
 
 func snapshotCmd() *cobra.Command {
-	var output string
-	var profileIndex int
+	var (
+		output  string
+		profile int
+	)
 
 	cmd := &cobra.Command{
 		Use:   "snapshot",
-		Short: "获取图片流",
-		Long:  "获取设备的图片流",
+		Short: "抓取图像",
+		Long:  "从摄像头抓取当前画面并保存为 JPEG 图像",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if host == "" {
 				return fmt.Errorf("必须指定设备地址 (-H/--host)")
+			}
+
+			if port < 1 || port > 65535 {
+				return fmt.Errorf("端口号必须在 1-65535 之间")
+			}
+
+			if authMode != "ws-security" && authMode != "digest" {
+				return fmt.Errorf("认证模式必须是 ws-security 或 digest")
 			}
 
 			client, err := NewONVIFClient(host, port, username, password, debug, useHTTPS)
 			if err != nil {
 				return fmt.Errorf("连接设备失败: %w", err)
 			}
+			client.AuthMode = authMode
 
-			return client.GetSnapshot(output, profileIndex)
+			return client.GetSnapshot(output, profile)
 		},
 	}
+
 	cmd.Flags().StringVarP(&output, "output", "o", "snapshot.jpg", "输出文件路径")
-	cmd.Flags().IntVarP(&profileIndex, "profile", "r", 0, "配置文件索引")
+	cmd.Flags().IntVarP(&profile, "profile", "r", 0, "配置文件索引")
 
 	return cmd
 }
@@ -174,15 +226,14 @@ func snapshotCmd() *cobra.Command {
 func configCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "设备配置管理",
-		Long:  "设备配置管理，包括视频编码配置和网络配置",
+		Short: "配置管理",
+		Long:  "查看和修改设备配置",
 	}
 
-	// get-video 子命令
+	// 子命令: 获取视频编码配置
 	getVideoCmd := &cobra.Command{
 		Use:   "get-video",
 		Short: "获取视频编码配置",
-		Long:  "获取设备的视频编码配置信息",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if host == "" {
 				return fmt.Errorf("必须指定设备地址 (-H/--host)")
@@ -192,17 +243,16 @@ func configCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("连接设备失败: %w", err)
 			}
+			client.AuthMode = authMode
 
 			return client.GetVideoEncoderConfiguration()
 		},
 	}
 
-	// set-video 子命令
-	var width, height, fps, bitrate int
+	// 子命令: 设置视频编码配置
 	setVideoCmd := &cobra.Command{
 		Use:   "set-video",
 		Short: "设置视频编码配置",
-		Long:  "设置设备的视频编码配置",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if host == "" {
 				return fmt.Errorf("必须指定设备地址 (-H/--host)")
@@ -212,20 +262,26 @@ func configCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("连接设备失败: %w", err)
 			}
+			client.AuthMode = authMode
+
+			width, _ := cmd.Flags().GetInt("width")
+			height, _ := cmd.Flags().GetInt("height")
+			fps, _ := cmd.Flags().GetInt("fps")
+			bitrate, _ := cmd.Flags().GetInt("bitrate")
 
 			return client.SetVideoEncoderConfiguration(width, height, fps, bitrate)
 		},
 	}
-	setVideoCmd.Flags().IntVarP(&width, "width", "w", 0, "视频宽度")
-	setVideoCmd.Flags().IntVarP(&height, "height", "h", 0, "视频高度")
-	setVideoCmd.Flags().IntVarP(&fps, "fps", "f", 0, "帧率")
-	setVideoCmd.Flags().IntVarP(&bitrate, "bitrate", "b", 0, "比特率 (kbps)")
 
-	// get-network 子命令
+	setVideoCmd.Flags().Int("width", 0, "视频宽度")
+	setVideoCmd.Flags().Int("height", 0, "视频高度")
+	setVideoCmd.Flags().Int("fps", 0, "帧率")
+	setVideoCmd.Flags().Int("bitrate", 0, "比特率 (kbps)")
+
+	// 子命令: 获取网络配置
 	getNetworkCmd := &cobra.Command{
 		Use:   "get-network",
 		Short: "获取网络配置",
-		Long:  "获取设备的网络配置信息",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if host == "" {
 				return fmt.Errorf("必须指定设备地址 (-H/--host)")
@@ -235,6 +291,7 @@ func configCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("连接设备失败: %w", err)
 			}
+			client.AuthMode = authMode
 
 			return client.GetNetworkConfiguration()
 		},
@@ -243,6 +300,319 @@ func configCmd() *cobra.Command {
 	cmd.AddCommand(getVideoCmd)
 	cmd.AddCommand(setVideoCmd)
 	cmd.AddCommand(getNetworkCmd)
+
+	return cmd
+}
+
+func discoverCmd() *cobra.Command {
+	var (
+		timeout  int
+		iface    string
+		saveFile string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "discover",
+		Short: "设备发现",
+		Long:  "使用 WS-Discovery 协议在局域网内发现 ONVIF 设备",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			devices, err := DiscoverDevices(timeout, iface, debug)
+			if err != nil {
+				return fmt.Errorf("设备发现失败: %w", err)
+			}
+
+			if len(devices) == 0 {
+				fmt.Println("未发现任何设备")
+				return nil
+			}
+
+			fmt.Printf("发现 %d 个设备:\n\n", len(devices))
+			for i, device := range devices {
+				fmt.Printf("设备 %d:\n", i+1)
+				fmt.Printf("  地址: %s\n", device.Address)
+				fmt.Printf("  XAddrs: %s\n", device.XAddrs)
+				fmt.Printf("  类型: %s\n", device.Types)
+				fmt.Printf("  范围: %s\n", device.Scopes)
+				fmt.Println()
+			}
+
+			// 保存到文件
+			if saveFile != "" {
+				if err := SaveDevicesToFile(devices, saveFile); err != nil {
+					return fmt.Errorf("保存设备列表失败: %w", err)
+				}
+				fmt.Printf("✓ 设备列表已保存到: %s\n", saveFile)
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().IntVarP(&timeout, "timeout", "t", 5, "发现超时时间（秒）")
+	cmd.Flags().StringVarP(&iface, "interface", "i", "", "网络接口名称（留空自动选择）")
+	cmd.Flags().StringVarP(&saveFile, "save", "o", "", "保存设备列表到文件")
+
+	return cmd
+}
+
+func timeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "time",
+		Short: "时间管理",
+		Long:  "查看和同步设备时间",
+	}
+
+	// 子命令: 获取时间
+	getTimeCmd := &cobra.Command{
+		Use:   "get",
+		Short: "获取设备时间",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if host == "" {
+				return fmt.Errorf("必须指定设备地址 (-H/--host)")
+			}
+
+			client, err := NewONVIFClient(host, port, username, password, debug, useHTTPS)
+			if err != nil {
+				return fmt.Errorf("连接设备失败: %w", err)
+			}
+			client.AuthMode = authMode
+
+			return client.GetSystemTime()
+		},
+	}
+
+	// 子命令: 同步时间
+	syncTimeCmd := &cobra.Command{
+		Use:   "sync",
+		Short: "同步设备时间到系统时间",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if host == "" {
+				return fmt.Errorf("必须指定设备地址 (-H/--host)")
+			}
+
+			client, err := NewONVIFClient(host, port, username, password, debug, useHTTPS)
+			if err != nil {
+				return fmt.Errorf("连接设备失败: %w", err)
+			}
+			client.AuthMode = authMode
+
+			return client.SyncSystemTime()
+		},
+	}
+
+	// 子命令: 设置 NTP
+	setNTPCmd := &cobra.Command{
+		Use:   "set-ntp",
+		Short: "设置 NTP 服务器",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if host == "" {
+				return fmt.Errorf("必须指定设备地址 (-H/--host)")
+			}
+
+			ntpServer, _ := cmd.Flags().GetString("server")
+			if ntpServer == "" {
+				return fmt.Errorf("必须指定 NTP 服务器地址 (--server)")
+			}
+
+			client, err := NewONVIFClient(host, port, username, password, debug, useHTTPS)
+			if err != nil {
+				return fmt.Errorf("连接设备失败: %w", err)
+			}
+			client.AuthMode = authMode
+
+			return client.SetNTP(ntpServer)
+		},
+	}
+
+	setNTPCmd.Flags().String("server", "", "NTP 服务器地址")
+
+	cmd.AddCommand(getTimeCmd)
+	cmd.AddCommand(syncTimeCmd)
+	cmd.AddCommand(setNTPCmd)
+
+	return cmd
+}
+
+func eventsCmd() *cobra.Command {
+	var (
+		duration int
+		filter   string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "events",
+		Short: "事件订阅",
+		Long:  "订阅和监听设备事件（移动侦测、报警等）",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if host == "" {
+				return fmt.Errorf("必须指定设备地址 (-H/--host)")
+			}
+
+			client, err := NewONVIFClient(host, port, username, password, debug, useHTTPS)
+			if err != nil {
+				return fmt.Errorf("连接设备失败: %w", err)
+			}
+			client.AuthMode = authMode
+
+			return client.SubscribeEvents(duration, filter)
+		},
+	}
+
+	cmd.Flags().IntVarP(&duration, "duration", "t", 60, "订阅持续时间（秒）")
+	cmd.Flags().StringVarP(&filter, "filter", "f", "", "事件过滤器（留空订阅所有事件）")
+
+	return cmd
+}
+
+func batchCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "batch",
+		Short: "批量设备管理",
+		Long:  "对多个设备执行批量操作",
+	}
+
+	// 子命令: 导入配置
+	importCmd := &cobra.Command{
+		Use:   "import",
+		Short: "从配置文件导入设备列表",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			configFile, _ := cmd.Flags().GetString("file")
+			if configFile == "" {
+				return fmt.Errorf("必须指定配置文件 (--file)")
+			}
+
+			config, err := LoadBatchConfig(configFile)
+			if err != nil {
+				return fmt.Errorf("加载配置文件失败: %w", err)
+			}
+
+			fmt.Printf("✓ 成功加载 %d 个设备配置\n", len(config.Devices))
+			for i, device := range config.Devices {
+				fmt.Printf("  [%d] %s - %s:%d\n", i+1, device.Name, device.Host, device.Port)
+			}
+
+			return nil
+		},
+	}
+
+	importCmd.Flags().String("file", "devices.yaml", "配置文件路径")
+
+	// 子命令: 导出配置
+	exportCmd := &cobra.Command{
+		Use:   "export",
+		Short: "导出设备配置到文件",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			configFile, _ := cmd.Flags().GetString("file")
+			if configFile == "" {
+				return fmt.Errorf("必须指定配置文件 (--file)")
+			}
+
+			// 创建示例配置
+			config := &BatchConfig{
+				Devices: []DeviceConfig{
+					{
+						Name:     "Camera-01",
+						Host:     "192.168.1.100",
+						Port:     80,
+						Username: "admin",
+						Password: "12345",
+						UseHTTPS: false,
+					},
+					{
+						Name:     "Camera-02",
+						Host:     "192.168.1.101",
+						Port:     80,
+						Username: "admin",
+						Password: "12345",
+						UseHTTPS: false,
+					},
+				},
+			}
+
+			if err := SaveBatchConfig(config, configFile); err != nil {
+				return fmt.Errorf("导出配置失败: %w", err)
+			}
+
+			fmt.Printf("✓ 配置已导出到: %s\n", configFile)
+			fmt.Println("  请编辑该文件以添加你的设备信息")
+
+			return nil
+		},
+	}
+
+	exportCmd.Flags().String("file", "devices.yaml", "配置文件路径")
+
+	// 子命令: 批量获取信息
+	infoAllCmd := &cobra.Command{
+		Use:   "info",
+		Short: "批量获取设备信息",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			configFile, _ := cmd.Flags().GetString("file")
+			if configFile == "" {
+				return fmt.Errorf("必须指定配置文件 (--file)")
+			}
+
+			config, err := LoadBatchConfig(configFile)
+			if err != nil {
+				return fmt.Errorf("加载配置文件失败: %w", err)
+			}
+
+			return BatchGetInfo(config)
+		},
+	}
+
+	infoAllCmd.Flags().String("file", "devices.yaml", "配置文件路径")
+
+	// 子命令: 批量抓图
+	snapshotAllCmd := &cobra.Command{
+		Use:   "snapshot",
+		Short: "批量抓取图像",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			configFile, _ := cmd.Flags().GetString("file")
+			outputDir, _ := cmd.Flags().GetString("output")
+
+			if configFile == "" {
+				return fmt.Errorf("必须指定配置文件 (--file)")
+			}
+
+			config, err := LoadBatchConfig(configFile)
+			if err != nil {
+				return fmt.Errorf("加载配置文件失败: %w", err)
+			}
+
+			return BatchSnapshot(config, outputDir)
+		},
+	}
+
+	snapshotAllCmd.Flags().String("file", "devices.yaml", "配置文件路径")
+	snapshotAllCmd.Flags().String("output", "snapshots", "输出目录")
+
+	// 子命令: 批量同步时间
+	syncAllCmd := &cobra.Command{
+		Use:   "sync-time",
+		Short: "批量同步设备时间",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			configFile, _ := cmd.Flags().GetString("file")
+			if configFile == "" {
+				return fmt.Errorf("必须指定配置文件 (--file)")
+			}
+
+			config, err := LoadBatchConfig(configFile)
+			if err != nil {
+				return fmt.Errorf("加载配置文件失败: %w", err)
+			}
+
+			return BatchSyncTime(config)
+		},
+	}
+
+	syncAllCmd.Flags().String("file", "devices.yaml", "配置文件路径")
+
+	cmd.AddCommand(importCmd)
+	cmd.AddCommand(exportCmd)
+	cmd.AddCommand(infoAllCmd)
+	cmd.AddCommand(snapshotAllCmd)
+	cmd.AddCommand(syncAllCmd)
 
 	return cmd
 }
