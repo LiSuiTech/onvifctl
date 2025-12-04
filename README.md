@@ -121,7 +121,7 @@ onvifctl stream -H 192.168.1.100 -P 443 -s -u admin -w 12345
 onvifctl stream -H 192.168.1.100 -P 8080 -u admin -w 12345
 
 # 获取子码流 (profile 1)
-onvifctl stream -H 192.168.1.100 -u admin -w 12345 -p 1
+onvifctl stream -H 192.168.1.100 -u admin -w 12345 -r 1
 
 # 使用 HTTP Digest 认证
 onvifctl stream -H 192.168.1.100 -u admin -w 12345 -a digest
@@ -195,7 +195,7 @@ onvifctl snapshot -H 192.168.1.100 -u admin -w 12345
 onvifctl snapshot -H 192.168.1.100 -u admin -w 12345 -o camera.jpg
 
 # 抓取子码流图像
-onvifctl snapshot -H 192.168.1.100 -u admin -w 12345 -p 1 -o substream.jpg
+onvifctl snapshot -H 192.168.1.100 -u admin -w 12345 -r 1 -o substream.jpg
 ```
 
 **输出示例:**
@@ -631,3 +631,4 @@ MIT License
 ## 贡献
 
 欢迎提交 Issue 和 Pull Request!
+
