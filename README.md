@@ -4,6 +4,10 @@
 
 ## 功能特性
 
+- ✅ **设备发现**
+  - WS-Discovery 协议自动发现局域网设备
+  - 支持指定网络接口
+  - 导出设备列表
 - ✅ **多种认证方式**
   - WS-UsernameToken (Digest) - 默认,所有 ONVIF 设备必须支持
   - HTTP Digest Authentication - RTSP/HTTP 标准认证
@@ -21,6 +25,18 @@
   - 查看视频编码配置
   - 修改分辨率、帧率、比特率
   - 查看网络配置
+- ✅ **时间管理**
+  - 获取设备时间
+  - 同步到系统时间
+  - 设置 NTP 服务器
+- ✅ **事件订阅**
+  - 监听设备事件
+  - 移动侦测、报警等
+- ✅ **批量设备管理**
+  - 配置文件导入/导出
+  - 批量获取信息
+  - 批量抓图
+  - 批量时间同步
 - ✅ 获取设备信息 (厂商、型号、固件版本等)
 - ✅ 获取系统时间
 - ✅ 获取 RTSP 视频流地址
@@ -105,7 +121,7 @@ onvifctl stream -H 192.168.1.100 -P 443 -s -u admin -w 12345
 onvifctl stream -H 192.168.1.100 -P 8080 -u admin -w 12345
 
 # 获取子码流 (profile 1)
-onvifctl stream -H 192.168.1.100 -u admin -w 12345 -r 1
+onvifctl stream -H 192.168.1.100 -u admin -w 12345 -p 1
 
 # 使用 HTTP Digest 认证
 onvifctl stream -H 192.168.1.100 -u admin -w 12345 -a digest
@@ -179,7 +195,7 @@ onvifctl snapshot -H 192.168.1.100 -u admin -w 12345
 onvifctl snapshot -H 192.168.1.100 -u admin -w 12345 -o camera.jpg
 
 # 抓取子码流图像
-onvifctl snapshot -H 192.168.1.100 -u admin -w 12345 -r 1 -o substream.jpg
+onvifctl snapshot -H 192.168.1.100 -u admin -w 12345 -p 1 -o substream.jpg
 ```
 
 **输出示例:**
@@ -215,6 +231,140 @@ onvifctl config get-network -H 192.168.1.100 -u admin -w 12345
   质量:       5
   帧率:       25 fps
   比特率:     4096 kbps
+```
+
+### 设备发现
+
+```bash
+# 自动发现局域网内的 ONVIF 设备
+onvifctl discover
+
+# 指定超时时间 (默认 5 秒)
+onvifctl discover -t 10
+
+# 指定网络接口
+onvifctl discover -i eth0
+
+# 保存发现的设备到文件
+onvifctl discover -o discovered.yaml
+
+# 启用调试模式查看详细信息
+onvifctl discover -d
+```
+
+**输出示例:**
+```
+发现 3 个设备:
+
+设备 1:
+  地址: urn:uuid:4d454930-0023-1002-8000-a0369f123456
+  XAddrs: http://192.168.1.100/onvif/device_service
+  类型: dn:NetworkVideoTransmitter
+  范围: onvif://www.onvif.org/name/Hikvision
+
+设备 2:
+  地址: urn:uuid:5e565041-0034-2103-9111-b1479f234567
+  XAddrs: http://192.168.1.101/onvif/device_service
+  类型: dn:NetworkVideoTransmitter
+  范围: onvif://www.onvif.org/name/Dahua
+
+设备 3:
+  地址: urn:uuid:6f676152-0045-3204-a222-c2589f345678
+  XAddrs: http://192.168.1.102/onvif/device_service
+  类型: dn:NetworkVideoTransmitter
+  范围: onvif://www.onvif.org/name/Uniview
+```
+
+### 时间管理
+
+```bash
+# 获取设备时间
+onvifctl time get -H 192.168.1.100 -u admin -w 12345
+
+# 同步设备时间到系统时间
+onvifctl time sync -H 192.168.1.100 -u admin -w 12345
+
+# 设置 NTP 服务器
+onvifctl time set-ntp -H 192.168.1.100 -u admin -w 12345 --server ntp.aliyun.com
+onvifctl time set-ntp -H 192.168.1.100 -u admin -w 12345 --server pool.ntp.org
+```
+
+**输出示例:**
+```
+=== 设备时间 ===
+时间类型: NTP
+设备时间: 2025-12-04 03:15:30 UTC
+时间差异: 120 秒
+
+✓ 时间同步成功
+  设备时间已设置为: 2025-12-04 03:17:30 UTC
+```
+
+### 事件订阅
+
+```bash
+# 订阅所有事件 (持续 60 秒)
+onvifctl events -H 192.168.1.100 -u admin -w 12345
+
+# 指定订阅时长
+onvifctl events -H 192.168.1.100 -u admin -w 12345 -t 300
+
+# 使用过滤器订阅特定事件
+onvifctl events -H 192.168.1.100 -u admin -w 12345 -f "tns1:RuleEngine/CellMotionDetector"
+```
+
+### 批量设备管理
+
+#### 1. 导出配置模板
+```bash
+# 生成配置文件模板
+onvifctl batch export --file devices.yaml
+```
+
+#### 2. 编辑配置文件
+编辑 `devices.yaml` 添加你的设备信息：
+```yaml
+devices:
+  - name: "Camera-Entrance"
+    host: "192.168.1.100"
+    port: 80
+    username: "admin"
+    password: "12345"
+    use_https: false
+  
+  - name: "Camera-Parking"
+    host: "192.168.1.101"
+    port: 80
+    username: "admin"
+    password: "12345"
+    use_https: false
+```
+
+#### 3. 批量操作
+```bash
+# 导入并验证配置
+onvifctl batch import --file devices.yaml
+
+# 批量获取所有设备信息
+onvifctl batch info --file devices.yaml
+
+# 批量抓取所有设备图像
+onvifctl batch snapshot --file devices.yaml --output snapshots
+
+# 批量同步所有设备时间
+onvifctl batch sync-time --file devices.yaml
+```
+
+**输出示例:**
+```
+正在获取 4 个设备的信息...
+
+[1] Camera-Entrance - Hikvision DS-2CD2143G0-I (固件: V5.7.3)
+[2] Camera-Parking - Hikvision DS-2CD2043G0-I (固件: V5.7.3)
+[3] Camera-Hallway - Dahua IPC-HFW2431S (固件: V2.800.0000000.25.R)
+[4] Camera-BackDoor - Uniview IPC322SR3-DVS28 (固件: V3.0.0.8)
+
+✓ 批量查询完成
 ```
 
 ### 命令行参数
@@ -282,6 +432,50 @@ onvifctl config get-network -H 192.168.1.100 -u admin -w 12345
 | --fps | 帧率 |
 | --bitrate | 比特率 (kbps) |
 
+#### discover 命令
+
+| 参数 | 简写 | 说明 | 默认值 |
+|------|------|------|--------|
+| --timeout | -t | 发现超时时间(秒) | 5 |
+| --interface | -i | 网络接口名称 | 自动 |
+| --save | -o | 保存设备列表到文件 | - |
+
+#### time 子命令
+
+| 子命令 | 说明 |
+|--------|------|
+| get | 获取设备时间 |
+| sync | 同步设备时间到系统时间 |
+| set-ntp | 设置 NTP 服务器 |
+
+**set-ntp 参数:**
+| 参数 | 说明 |
+|------|------|
+| --server | NTP 服务器地址 |
+
+#### events 命令
+
+| 参数 | 简写 | 说明 | 默认值 |
+|------|------|------|--------|
+| --duration | -t | 订阅持续时间(秒) | 60 |
+| --filter | -f | 事件过滤器 | - |
+
+#### batch 子命令
+
+| 子命令 | 说明 |
+|--------|------|
+| import | 从配置文件导入设备列表 |
+| export | 导出设备配置到文件 |
+| info | 批量获取设备信息 |
+| snapshot | 批量抓取图像 |
+| sync-time | 批量同步设备时间 |
+
+**公共参数:**
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| --file | 配置文件路径 | devices.yaml |
+| --output | 输出目录 (snapshot) | snapshots |
+
 ## 使用 RTSP 流
 
 获取到 RTSP 地址后,可以使用以下工具播放:
@@ -311,7 +505,9 @@ ffmpeg -i "rtsp://admin:12345@192.168.1.100:554/Streaming/Channels/101" \
 onvifctl/
 ├── main.go         # 主程序和命令行接口
 ├── client.go       # ONVIF 客户端实现
+├── advanced.go     # 高级功能(发现、事件、批量管理)
 ├── go.mod          # Go 模块配置
+├── devices.yaml    # 批量设备配置文件
 └── README.md       # 说明文档
 ```
 
@@ -357,6 +553,8 @@ onvifctl/
 **设备服务 (Device Service):**
 - GetDeviceInformation - 获取设备信息
 - GetSystemDateAndTime - 获取系统时间
+- SetSystemDateAndTime - 设置系统时间
+- SetNTP - 设置 NTP 服务器
 - GetNetworkInterfaces - 获取网络配置
 
 **媒体服务 (Media Service):**
@@ -372,6 +570,14 @@ onvifctl/
 - GotoPreset - 转到预置位
 - SetPreset - 设置预置位
 - GetPresets - 获取预置位列表
+
+**事件服务 (Event Service):**
+- Subscribe - 订阅事件
+- CreatePullPointSubscription - 创建拉取点订阅
+- PullMessages - 拉取消息
+
+**发现服务 (Discovery):**
+- WS-Discovery Probe - 设备发现
 
 ## 常见问题
 
@@ -406,13 +612,17 @@ onvifctl/
 - [x] 图像抓取
 - [x] 视频编码配置
 - [x] 网络配置查看
-- [ ] 设备发现 (WS-Discovery)
-- [ ] 事件订阅
+- [x] 设备发现 (WS-Discovery)
+- [x] 时间同步
+- [x] 批量设备管理
+- [x] 配置导入/导出
+- [x] 事件订阅 (框架)
 - [ ] 音频配置
 - [ ] 用户管理
-- [ ] 时间同步
-- [ ] 批量设备管理
-- [ ] 配置导入/导出
+- [ ] 完整的事件处理 (PullPoint)
+- [ ] 设备备份/恢复
+- [ ] Web 管理界面
+- [ ] 日志记录和审计
 
 ## 许可证
 
