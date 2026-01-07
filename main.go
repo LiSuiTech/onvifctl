@@ -19,9 +19,10 @@ var (
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:   "onvifctl",
-		Short: "ONVIF Command Line Tool",
-		Long:  "ONVIF 协议命令行工具，用于管理和控制支持 ONVIF 的网络摄像头设备",
+		Use:     "onvifctl",
+		Short:   "ONVIF Command Line Tool",
+		Long:    "ONVIF 协议命令行工具，用于管理和控制支持 ONVIF 的网络摄像头设备",
+		Version: "1.0.0",
 	}
 
 	// 全局 flags
@@ -39,7 +40,7 @@ func main() {
 	rootCmd.AddCommand(ptzCmd())
 	rootCmd.AddCommand(snapshotCmd())
 	rootCmd.AddCommand(configCmd())
-	rootCmd.AddCommand(discoverCmd())
+	rootCmd.AddCommand(discoverCmd()) // 新的增强版 discover 命令
 	rootCmd.AddCommand(timeCmd())
 	rootCmd.AddCommand(eventsCmd())
 	rootCmd.AddCommand(batchCmd())
@@ -59,11 +60,9 @@ func infoCmd() *cobra.Command {
 			if host == "" {
 				return fmt.Errorf("必须指定设备地址 (-H/--host)")
 			}
-
 			if port < 1 || port > 65535 {
 				return fmt.Errorf("端口号必须在 1-65535 之间")
 			}
-
 			if authMode != "ws-security" && authMode != "digest" {
 				return fmt.Errorf("认证模式必须是 ws-security 或 digest")
 			}
@@ -92,11 +91,9 @@ func streamCmd() *cobra.Command {
 			if host == "" {
 				return fmt.Errorf("必须指定设备地址 (-H/--host)")
 			}
-
 			if port < 1 || port > 65535 {
 				return fmt.Errorf("端口号必须在 1-65535 之间")
 			}
-
 			if authMode != "ws-security" && authMode != "digest" {
 				return fmt.Errorf("认证模式必须是 ws-security 或 digest")
 			}
@@ -134,11 +131,9 @@ func ptzCmd() *cobra.Command {
 			if host == "" {
 				return fmt.Errorf("必须指定设备地址 (-H/--host)")
 			}
-
 			if port < 1 || port > 65535 {
 				return fmt.Errorf("端口号必须在 1-65535 之间")
 			}
-
 			if authMode != "ws-security" && authMode != "digest" {
 				return fmt.Errorf("认证模式必须是 ws-security 或 digest")
 			}
@@ -178,7 +173,6 @@ func ptzCmd() *cobra.Command {
 	cmd.Flags().Float64Var(&zoomSpeed, "zoom", 0, "缩放速度 (-1.0 到 1.0, 负值缩小)")
 	cmd.Flags().IntVar(&timeout, "timeout", 1, "移动持续时间（秒）")
 	cmd.Flags().IntVar(&preset, "preset", 0, "预置位编号")
-
 	cmd.MarkFlagRequired("action")
 
 	return cmd
@@ -198,11 +192,9 @@ func snapshotCmd() *cobra.Command {
 			if host == "" {
 				return fmt.Errorf("必须指定设备地址 (-H/--host)")
 			}
-
 			if port < 1 || port > 65535 {
 				return fmt.Errorf("端口号必须在 1-65535 之间")
 			}
-
 			if authMode != "ws-security" && authMode != "digest" {
 				return fmt.Errorf("认证模式必须是 ws-security 或 digest")
 			}
@@ -300,57 +292,6 @@ func configCmd() *cobra.Command {
 	cmd.AddCommand(getVideoCmd)
 	cmd.AddCommand(setVideoCmd)
 	cmd.AddCommand(getNetworkCmd)
-
-	return cmd
-}
-
-func discoverCmd() *cobra.Command {
-	var (
-		timeout  int
-		iface    string
-		saveFile string
-	)
-
-	cmd := &cobra.Command{
-		Use:   "discover",
-		Short: "设备发现",
-		Long:  "使用 WS-Discovery 协议在局域网内发现 ONVIF 设备",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			devices, err := DiscoverDevices(timeout, iface, debug)
-			if err != nil {
-				return fmt.Errorf("设备发现失败: %w", err)
-			}
-
-			if len(devices) == 0 {
-				fmt.Println("未发现任何设备")
-				return nil
-			}
-
-			fmt.Printf("发现 %d 个设备:\n\n", len(devices))
-			for i, device := range devices {
-				fmt.Printf("设备 %d:\n", i+1)
-				fmt.Printf("  地址: %s\n", device.Address)
-				fmt.Printf("  XAddrs: %s\n", device.XAddrs)
-				fmt.Printf("  类型: %s\n", device.Types)
-				fmt.Printf("  范围: %s\n", device.Scopes)
-				fmt.Println()
-			}
-
-			// 保存到文件
-			if saveFile != "" {
-				if err := SaveDevicesToFile(devices, saveFile); err != nil {
-					return fmt.Errorf("保存设备列表失败: %w", err)
-				}
-				fmt.Printf("✓ 设备列表已保存到: %s\n", saveFile)
-			}
-
-			return nil
-		},
-	}
-
-	cmd.Flags().IntVarP(&timeout, "timeout", "t", 5, "发现超时时间（秒）")
-	cmd.Flags().StringVarP(&iface, "interface", "i", "", "网络接口名称（留空自动选择）")
-	cmd.Flags().StringVarP(&saveFile, "save", "o", "", "保存设备列表到文件")
 
 	return cmd
 }
@@ -570,7 +511,6 @@ func batchCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			configFile, _ := cmd.Flags().GetString("file")
 			outputDir, _ := cmd.Flags().GetString("output")
-
 			if configFile == "" {
 				return fmt.Errorf("必须指定配置文件 (--file)")
 			}
