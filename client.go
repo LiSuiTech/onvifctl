@@ -13,6 +13,24 @@ import (
 	"time"
 )
 
+const (
+	// ONVIF 服务路径
+	defaultDeviceServicePath = "/onvif/device_service"
+	defaultMediaServicePath  = "/onvif/media_service"
+	defaultPTZServicePath    = "/onvif/ptz_service"
+	defaultEventServicePath  = "/onvif/event_service"
+
+	// 默认超时时间
+	defaultClientTimeout = 30 * time.Second
+
+	// HTTP 状态码
+	httpStatusOK           = 200
+	httpStatusUnauthorized = 401
+
+	// 文件权限
+	defaultFilePermission = 0644
+)
+
 type ONVIFClient struct {
 	Host       string
 	Port       int
@@ -40,7 +58,7 @@ func NewONVIFClient(host string, port int, username, password string, debug, use
 
 	// 创建 HTTP 客户端
 	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: defaultClientTimeout,
 	}
 
 	// 如果使用 HTTPS,配置 TLS
@@ -59,8 +77,8 @@ func NewONVIFClient(host string, port int, username, password string, debug, use
 		Password:   password,
 		Debug:      debug,
 		UseHTTPS:   useHTTPS,
-		XAddr:      fmt.Sprintf("%s://%s/onvif/device_service", protocol, hostWithPort),
-		MediaAddr:  fmt.Sprintf("%s://%s/onvif/media_service", protocol, hostWithPort),
+		XAddr:      fmt.Sprintf("%s://%s%s", protocol, hostWithPort, defaultDeviceServicePath),
+		MediaAddr:  fmt.Sprintf("%s://%s%s", protocol, hostWithPort, defaultMediaServicePath),
 		AuthMode:   "ws-security", // 默认使用 WS-Security
 		nc:         0,
 		httpClient: httpClient,
@@ -149,6 +167,40 @@ func (c *ONVIFClient) sendRequest(url string, request interface{}) ([]byte, erro
 	return body, nil
 }
 
+// 获取 Profiles 列表（提取公共方法，避免重复）
+func (c *ONVIFClient) getProfiles() ([]Profile, error) {
+	respData, err := c.sendRequest(c.MediaAddr, &GetProfiles{})
+	if err != nil {
+		return nil, err
+	}
+
+	var profilesResp struct {
+		Body struct {
+			GetProfilesResponse GetProfilesResponse
+		}
+	}
+
+	if err := xml.Unmarshal(respData, &profilesResp); err != nil {
+		return nil, fmt.Errorf("解析 profiles 失败: %w", err)
+	}
+
+	profiles := profilesResp.Body.GetProfilesResponse.Profiles
+	if len(profiles) == 0 {
+		return nil, fmt.Errorf("设备没有可用的 profile")
+	}
+
+	return profiles, nil
+}
+
+// 构建 PTZ 服务地址（提取公共方法）
+func (c *ONVIFClient) buildPTZAddress() string {
+	protocol := "http"
+	if c.UseHTTPS {
+		protocol = "https"
+	}
+	return fmt.Sprintf("%s://%s:%d%s", protocol, c.Host, c.Port, defaultPTZServicePath)
+}
+
 // 获取设备信息
 func (c *ONVIFClient) GetDeviceInfo() error {
 	// 获取设备基本信息
@@ -211,29 +263,13 @@ func (c *ONVIFClient) GetDeviceInfo() error {
 // PTZ 移动
 func (c *ONVIFClient) PTZMove(pan, tilt, zoom float64, timeout int) error {
 	// 获取 profiles
-	respData, err := c.sendRequest(c.MediaAddr, &GetProfiles{})
+	profiles, err := c.getProfiles()
 	if err != nil {
 		return err
 	}
 
-	var profilesResp struct {
-		Body struct {
-			GetProfilesResponse GetProfilesResponse
-		}
-	}
-
-	if err := xml.Unmarshal(respData, &profilesResp); err != nil {
-		return fmt.Errorf("解析 profiles 失败: %w", err)
-	}
-
-	profiles := profilesResp.Body.GetProfilesResponse.Profiles
-	if len(profiles) == 0 {
-		return fmt.Errorf("设备没有可用的 profile")
-	}
-
 	// 构建 PTZ 服务地址
-	ptzAddr := fmt.Sprintf("%s://%s:%d/onvif/ptz_service",
-		map[bool]string{true: "https", false: "http"}[c.UseHTTPS], c.Host, c.Port)
+	ptzAddr := c.buildPTZAddress()
 
 	// 发送移动命令
 	moveReq := ContinuousMove{
@@ -267,29 +303,13 @@ func (c *ONVIFClient) PTZMove(pan, tilt, zoom float64, timeout int) error {
 // PTZ 停止
 func (c *ONVIFClient) PTZStop() error {
 	// 获取 profiles
-	respData, err := c.sendRequest(c.MediaAddr, &GetProfiles{})
+	profiles, err := c.getProfiles()
 	if err != nil {
 		return err
 	}
 
-	var profilesResp struct {
-		Body struct {
-			GetProfilesResponse GetProfilesResponse
-		}
-	}
-
-	if err := xml.Unmarshal(respData, &profilesResp); err != nil {
-		return fmt.Errorf("解析 profiles 失败: %w", err)
-	}
-
-	profiles := profilesResp.Body.GetProfilesResponse.Profiles
-	if len(profiles) == 0 {
-		return fmt.Errorf("设备没有可用的 profile")
-	}
-
 	// 构建 PTZ 服务地址
-	ptzAddr := fmt.Sprintf("%s://%s:%d/onvif/ptz_service",
-		map[bool]string{true: "https", false: "http"}[c.UseHTTPS], c.Host, c.Port)
+	ptzAddr := c.buildPTZAddress()
 
 	// 发送停止命令
 	stopReq := Stop{
@@ -311,29 +331,13 @@ func (c *ONVIFClient) PTZStop() error {
 // PTZ 转到预置位
 func (c *ONVIFClient) PTZGotoPreset(presetNum int) error {
 	// 获取 profiles
-	respData, err := c.sendRequest(c.MediaAddr, &GetProfiles{})
+	profiles, err := c.getProfiles()
 	if err != nil {
 		return err
 	}
 
-	var profilesResp struct {
-		Body struct {
-			GetProfilesResponse GetProfilesResponse
-		}
-	}
-
-	if err := xml.Unmarshal(respData, &profilesResp); err != nil {
-		return fmt.Errorf("解析 profiles 失败: %w", err)
-	}
-
-	profiles := profilesResp.Body.GetProfilesResponse.Profiles
-	if len(profiles) == 0 {
-		return fmt.Errorf("设备没有可用的 profile")
-	}
-
 	// 构建 PTZ 服务地址
-	ptzAddr := fmt.Sprintf("%s://%s:%d/onvif/ptz_service",
-		map[bool]string{true: "https", false: "http"}[c.UseHTTPS], c.Host, c.Port)
+	ptzAddr := c.buildPTZAddress()
 
 	// 发送转到预置位命令
 	gotoReq := GotoPreset{
@@ -354,29 +358,13 @@ func (c *ONVIFClient) PTZGotoPreset(presetNum int) error {
 // PTZ 设置预置位
 func (c *ONVIFClient) PTZSetPreset(presetNum int) error {
 	// 获取 profiles
-	respData, err := c.sendRequest(c.MediaAddr, &GetProfiles{})
+	profiles, err := c.getProfiles()
 	if err != nil {
 		return err
 	}
 
-	var profilesResp struct {
-		Body struct {
-			GetProfilesResponse GetProfilesResponse
-		}
-	}
-
-	if err := xml.Unmarshal(respData, &profilesResp); err != nil {
-		return fmt.Errorf("解析 profiles 失败: %w", err)
-	}
-
-	profiles := profilesResp.Body.GetProfilesResponse.Profiles
-	if len(profiles) == 0 {
-		return fmt.Errorf("设备没有可用的 profile")
-	}
-
 	// 构建 PTZ 服务地址
-	ptzAddr := fmt.Sprintf("%s://%s:%d/onvif/ptz_service",
-		map[bool]string{true: "https", false: "http"}[c.UseHTTPS], c.Host, c.Port)
+	ptzAddr := c.buildPTZAddress()
 
 	// 发送设置预置位命令
 	setReq := SetPreset{
@@ -384,7 +372,7 @@ func (c *ONVIFClient) PTZSetPreset(presetNum int) error {
 		PresetName:   fmt.Sprintf("Preset_%d", presetNum),
 	}
 
-	respData, err = c.sendRequest(ptzAddr, &setReq)
+	respData, err := c.sendRequest(ptzAddr, &setReq)
 	if err != nil {
 		return fmt.Errorf("设置预置位失败: %w", err)
 	}
@@ -408,36 +396,20 @@ func (c *ONVIFClient) PTZSetPreset(presetNum int) error {
 // PTZ 列出所有预置位
 func (c *ONVIFClient) PTZListPresets() error {
 	// 获取 profiles
-	respData, err := c.sendRequest(c.MediaAddr, &GetProfiles{})
+	profiles, err := c.getProfiles()
 	if err != nil {
 		return err
 	}
 
-	var profilesResp struct {
-		Body struct {
-			GetProfilesResponse GetProfilesResponse
-		}
-	}
-
-	if err := xml.Unmarshal(respData, &profilesResp); err != nil {
-		return fmt.Errorf("解析 profiles 失败: %w", err)
-	}
-
-	profiles := profilesResp.Body.GetProfilesResponse.Profiles
-	if len(profiles) == 0 {
-		return fmt.Errorf("设备没有可用的 profile")
-	}
-
 	// 构建 PTZ 服务地址
-	ptzAddr := fmt.Sprintf("%s://%s:%d/onvif/ptz_service",
-		map[bool]string{true: "https", false: "http"}[c.UseHTTPS], c.Host, c.Port)
+	ptzAddr := c.buildPTZAddress()
 
 	// 获取预置位列表
 	getReq := GetPresets{
 		ProfileToken: profiles[0].Token,
 	}
 
-	respData, err = c.sendRequest(ptzAddr, &getReq)
+	respData, err := c.sendRequest(ptzAddr, &getReq)
 	if err != nil {
 		return fmt.Errorf("获取预置位列表失败: %w", err)
 	}
@@ -469,24 +441,9 @@ func (c *ONVIFClient) PTZListPresets() error {
 // 获取抓图 URI 并下载
 func (c *ONVIFClient) GetSnapshot(output string, profileIndex int) error {
 	// 获取 profiles
-	respData, err := c.sendRequest(c.MediaAddr, &GetProfiles{})
+	profiles, err := c.getProfiles()
 	if err != nil {
 		return err
-	}
-
-	var profilesResp struct {
-		Body struct {
-			GetProfilesResponse GetProfilesResponse
-		}
-	}
-
-	if err := xml.Unmarshal(respData, &profilesResp); err != nil {
-		return fmt.Errorf("解析 profiles 失败: %w", err)
-	}
-
-	profiles := profilesResp.Body.GetProfilesResponse.Profiles
-	if len(profiles) == 0 {
-		return fmt.Errorf("设备没有可用的 profile")
 	}
 
 	if profileIndex >= len(profiles) {
@@ -542,7 +499,7 @@ func (c *ONVIFClient) GetSnapshot(output string, profileIndex int) error {
 		return fmt.Errorf("读取图像数据失败: %w", err)
 	}
 
-	if err := os.WriteFile(output, data, 0644); err != nil {
+	if err := os.WriteFile(output, data, defaultFilePermission); err != nil {
 		return fmt.Errorf("保存图像失败: %w", err)
 	}
 
@@ -688,24 +645,9 @@ func (c *ONVIFClient) GetNetworkConfiguration() error {
 // 获取流地址
 func (c *ONVIFClient) GetStreamURI(profileIndex int) error {
 	// 获取所有 profiles
-	respData, err := c.sendRequest(c.MediaAddr, &GetProfiles{})
+	profiles, err := c.getProfiles()
 	if err != nil {
 		return err
-	}
-
-	var profilesResp struct {
-		Body struct {
-			GetProfilesResponse GetProfilesResponse
-		}
-	}
-
-	if err := xml.Unmarshal(respData, &profilesResp); err != nil {
-		return fmt.Errorf("解析 profiles 失败: %w", err)
-	}
-
-	profiles := profilesResp.Body.GetProfilesResponse.Profiles
-	if len(profiles) == 0 {
-		return fmt.Errorf("设备没有可用的 profile")
 	}
 
 	if profileIndex >= len(profiles) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/xml"
 	"fmt"
 	"net"
@@ -11,6 +12,16 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+)
+
+const (
+	// WS-Discovery 组播地址和端口
+	wsDiscoveryMulticastAddr = "239.255.255.250:3702"
+	wsDiscoveryTimeout       = 3 * time.Second
+
+	// 文件权限
+	configFilePermission = 0644
+	snapshotDirPermission = 0755
 )
 
 // WS-Discovery 相关结构
@@ -141,14 +152,28 @@ func DiscoverDevices(timeout int, ifaceName string, debug bool) ([]ProbeMatch, e
 	return result, nil
 }
 
-// 生成 UUID
+// 生成 UUID v4 (标准实现)
 func generateUUID() string {
+	uuid := make([]byte, 16)
+	_, err := rand.Read(uuid)
+	if err != nil {
+		// 降级到基于时间的 UUID
+		nano := time.Now().UnixNano()
+		for i := 0; i < 16; i++ {
+			uuid[i] = byte(nano >> (i * 8))
+		}
+	}
+
+	// 设置版本 (4) 和变体 (RFC 4122)
+	uuid[6] = (uuid[6] & 0x0f) | 0x40 // 版本 4
+	uuid[8] = (uuid[8] & 0x3f) | 0x80 // 变体 RFC 4122
+
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		time.Now().UnixNano()&0xFFFFFFFF,
-		time.Now().UnixNano()>>32&0xFFFF,
-		0x4000|(time.Now().UnixNano()>>48&0x0FFF),
-		0x8000|(time.Now().UnixNano()>>60&0x3FFF),
-		time.Now().UnixNano()&0xFFFFFFFFFFFF)
+		uint32(uuid[0])<<24|uint32(uuid[1])<<16|uint32(uuid[2])<<8|uint32(uuid[3]),
+		uint16(uuid[4])<<8|uint16(uuid[5]),
+		uint16(uuid[6])<<8|uint16(uuid[7]),
+		uint16(uuid[8])<<8|uint16(uuid[9]),
+		uint64(uuid[10])<<40|uint64(uuid[11])<<32|uint64(uuid[12])<<24|uint64(uuid[13])<<16|uint64(uuid[14])<<8|uint64(uuid[15]))
 }
 
 // 保存设备列表到文件
@@ -157,7 +182,7 @@ func SaveDevicesToFile(devices []ProbeMatch, filename string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filename, data, 0644)
+	return os.WriteFile(filename, data, configFilePermission)
 }
 
 // 时间同步相关结构
@@ -622,7 +647,7 @@ func SaveBatchConfig(config *BatchConfig, filename string) error {
 		return err
 	}
 
-	return os.WriteFile(filename, data, 0644)
+	return os.WriteFile(filename, data, configFilePermission)
 }
 
 // 批量获取设备信息
@@ -685,7 +710,7 @@ func BatchGetInfo(config *BatchConfig) error {
 // 批量抓图
 func BatchSnapshot(config *BatchConfig, outputDir string) error {
 	// 创建输出目录
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	if err := os.MkdirAll(outputDir, snapshotDirPermission); err != nil {
 		return fmt.Errorf("创建输出目录失败: %w", err)
 	}
 

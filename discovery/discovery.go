@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -16,7 +16,27 @@ import (
 	"golang.org/x/net/ipv4"
 )
 
-const bufSize = 8192
+const (
+	bufSize = 8192
+
+	// 默认端口列表
+	defaultPorts = "80,8080,8000,8899,9000,554"
+
+	// 默认超时时间
+	defaultProbeTimeout = 2 * time.Second
+
+	// 并发控制
+	maxConcurrentProbes = 1000
+
+	// 进度显示间隔
+	progressUpdateInterval = 500
+
+	// WS-Discovery 相关
+	wsDiscoveryMulticastIP   = "239.255.255.250"
+	wsDiscoveryPort          = 3702
+	wsDiscoveryTimeout       = 3 * time.Second
+	wsDiscoveryMulticastTTL  = 2
+)
 
 // ONVIFDevice ONVIF设备基本信息
 type ONVIFDevice struct {
@@ -86,7 +106,7 @@ func (dd *DeviceDiscovery) DiscoverByIPRange(startIP, endIP string, ports []int,
 	}
 
 	if timeout == 0 {
-		timeout = 2 * time.Second // 减少超时时间
+		timeout = defaultProbeTimeout
 	}
 
 	ips, err := dd.generateIPRange(startIP, endIP)
@@ -109,7 +129,7 @@ func (dd *DeviceDiscovery) DiscoverByIPRange(startIP, endIP string, ports []int,
 	}
 
 	results := make(chan ONVIFDevice, len(ips)*len(ports)*len(paths))
-	semaphore := make(chan struct{}, 1000) // 增加并发数: 50 -> 200
+	semaphore := make(chan struct{}, maxConcurrentProbes)
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex // 用于保护 deviceMap
@@ -132,7 +152,7 @@ func (dd *DeviceDiscovery) DiscoverByIPRange(startIP, endIP string, ports []int,
 						// 更新进度
 						progressMu.Lock()
 						completedTasks++
-						if completedTasks%500 == 0 || completedTasks == totalTasks {
+						if completedTasks%progressUpdateInterval == 0 || completedTasks == totalTasks {
 							fmt.Printf("\r扫描进度: %d/%d (%.1f%%)  ", completedTasks, totalTasks, float64(completedTasks)*100/float64(totalTasks))
 						}
 						progressMu.Unlock()
@@ -173,30 +193,23 @@ func (dd *DeviceDiscovery) DiscoverByIPRange(startIP, endIP string, ports []int,
 		mu.Unlock()
 	}
 
-	// 转换为切片并显示
+	// 转换为切片
 	fmt.Println() // 换行,避免覆盖进度条
 	for _, device := range deviceMap {
 		dd.devices = append(dd.devices, device)
-		//fmt.Printf("✓ 发现设备: %s:%d%s\n", device.IP, device.Port, device.Path)
 	}
 
-	//fmt.Printf("\n扫描完成,发现 %d 个唯一设备\n", len(dd.devices))
 	return dd.devices, nil
 }
 
 // DiscoverMixed 混合模式发现
 func (dd *DeviceDiscovery) DiscoverMixed(interfaceName string, ipRanges []IPRange, ports []int, timeout time.Duration) ([]ONVIFDevice, error) {
-	//fmt.Println("=== 混合发现模式 ===")
-
 	// 使用 IP:Port 作为唯一标识去重
 	deviceMap := make(map[string]ONVIFDevice)
 
 	// 1. 广播发现
-	//fmt.Println("\n[阶段1] 广播发现...")
 	broadcastDevices, err := dd.DiscoverByBroadcast(interfaceName)
 	if err == nil {
-		//fmt.Printf("广播发现失败: %v\n", err)
-		//} else {
 		for _, dev := range broadcastDevices {
 			key := fmt.Sprintf("%s:%d", dev.IP, dev.Port)
 			deviceMap[key] = dev
@@ -205,11 +218,9 @@ func (dd *DeviceDiscovery) DiscoverMixed(interfaceName string, ipRanges []IPRang
 
 	// 2. IP范围扫描
 	if len(ipRanges) > 0 {
-		//fmt.Println("\n[阶段2] IP范围扫描...")
 		for _, ipRange := range ipRanges {
 			rangeDevices, err := dd.DiscoverByIPRange(ipRange.StartIP, ipRange.EndIP, ports, timeout)
 			if err != nil {
-				//fmt.Printf("IP扫描失败: %v\n", err)
 				continue
 			}
 
@@ -229,7 +240,6 @@ func (dd *DeviceDiscovery) DiscoverMixed(interfaceName string, ipRanges []IPRang
 		dd.devices = append(dd.devices, device)
 	}
 
-	//fmt.Printf("\n总计发现 %d 个唯一设备(按IP:端口去重)\n", len(dd.devices))
 	return dd.devices, nil
 }
 
@@ -297,25 +307,25 @@ func (dd *DeviceDiscovery) sendMulticastOnInterface(msg string, iface *net.Inter
 	defer c.Close()
 
 	p := ipv4.NewPacketConn(c)
-	group := net.IPv4(239, 255, 255, 250)
+	group := net.ParseIP(wsDiscoveryMulticastIP)
 
 	if err := p.JoinGroup(iface, &net.UDPAddr{IP: group}); err != nil {
 		return result
 	}
 
-	dst := &net.UDPAddr{IP: group, Port: 3702}
+	dst := &net.UDPAddr{IP: group, Port: wsDiscoveryPort}
 
 	if err := p.SetMulticastInterface(iface); err != nil {
 		return result
 	}
 
-	p.SetMulticastTTL(2)
+	p.SetMulticastTTL(wsDiscoveryMulticastTTL)
 
 	if _, err := p.WriteTo([]byte(msg), nil, dst); err != nil {
 		return result
 	}
 
-	if err := p.SetReadDeadline(time.Now().Add(time.Second * 3)); err != nil {
+	if err := p.SetReadDeadline(time.Now().Add(wsDiscoveryTimeout)); err != nil {
 		return result
 	}
 
@@ -382,7 +392,7 @@ func (dd *DeviceDiscovery) probeDevice(xaddr string, timeout time.Duration) bool
 		return true
 	}
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return false
 	}
